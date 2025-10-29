@@ -1,0 +1,54 @@
+# 환경변수 및 민감한 정보
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+env/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# 데이터 및 결과 파일
+data/
+data_backup/
+results/
+logs/
+
+# Airflow
+airflow.db
+airflow.cfg
+webserver_config.py
+
+# Spark
+metastore_db/
+spark-warehouse/
+derby.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.claude/
+
+# Docker volumes
+postgres-db-volume/
+
+# Temporary files
+*.log
+*.tmp
+.cache/

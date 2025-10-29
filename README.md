@@ -70,4 +70,92 @@
 
 ---
 
-## 📁 5. 디렉토리 구조 (Directory Structure)
+## 🚀 5. 실행 가이드 (Quick Start)
+
+### 사전 요구사항
+
+- Docker 및 Docker Compose 설치
+- 최소 8GB 메모리 권장
+- 사용 포트:
+  - `8080`: Airflow Webserver
+  - `8501`: Streamlit Dashboard
+  - `5432`: PostgreSQL
+  - `9092`: Kafka
+  - `2181`: Zookeeper
+
+### 전체 파이프라인 실행 (권장)
+
+한 번의 명령으로 배치 + 실시간 파이프라인 모두 실행:
+
+```bash
+# 1. Docker Compose로 전체 시스템 시작
+docker-compose up -d
+
+# 2. 서비스 상태 확인
+docker-compose ps
+
+# 3. 로그 확인 (각각 별도 터미널에서)
+docker-compose logs -f spark-streaming  # 실시간 처리 로그
+docker-compose logs -f kafka-producer   # 데이터 생성 로그
+docker-compose logs -f streamlit        # 대시보드 로그
+docker-compose logs -f airflow-scheduler # 배치 스케줄러 로그
+```
+
+### 서비스 접속
+
+- **Airflow** (배치 파이프라인 관리): http://localhost:8080
+  - Username: `admin`
+  - Password: `admin`
+  - DAG: `zigbang_daily_batch` 활성화하여 배치 실행
+
+- **Streamlit Dashboard** (분석 결과 조회): http://localhost:8501
+  - 5개 대시보드 페이지:
+    1. 지역별 검색량 대시보드
+    2. 시간대별 활동 분석 대시보드
+    3. 실시간 스트리밍 대시보드
+    4. 세션 분석 대시보드
+    5. Funnel 분석 대시보드
+
+### 서비스 관리
+
+```bash
+# 특정 서비스만 재시작
+docker-compose restart spark-streaming
+docker-compose restart kafka-producer
+
+# 전체 서비스 중지
+docker-compose down
+
+# 전체 서비스 중지 및 볼륨 삭제 (데이터 초기화)
+docker-compose down -v
+```
+
+### 로컬 개발 환경 (Docker 없이)
+
+```bash
+# 1. Python 가상환경 설정
+python3 -m venv .venv
+source .venv/bin/activate  # macOS/Linux
+# .venv\Scripts\activate   # Windows
+
+# 2. 의존성 설치
+pip install pyspark==3.4.4 kafka-python boto3 psycopg2-binary streamlit pandas plotly
+
+# 3. 인프라만 Docker로 시작
+docker-compose up -d postgres kafka zookeeper
+
+# 4. 배치 파이프라인 실행 (특정 날짜)
+PYSPARK_PYTHON=.venv/bin/python PYSPARK_DRIVER_PYTHON=.venv/bin/python \
+  .venv/bin/python src/batch/pipeline.py 2025-10-29
+
+# 5. 실시간 처리 실행
+python src/streaming/kafka_producer.py  # 터미널 1
+.venv/bin/python src/streaming/streaming_job.py  # 터미널 2
+
+# 6. 대시보드 실행
+cd src/streamlit_app && ../../.venv/bin/streamlit run Home.py
+```
+
+---
+
+## 📁 6. 디렉토리 구조 (Directory Structure)

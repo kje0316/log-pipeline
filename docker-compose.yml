@@ -1,0 +1,182 @@
+# # docker-compose.yml
+# version: '3.8'
+
+# services:
+#   zookeeper:
+#     image: confluentinc/cp-zookeeper:latest
+#     environment:
+#       ZOOKEEPER_CLIENT_PORT: 2181
+#       ZOOKEEPER_TICK_TIME: 2000
+#     ports:
+#       - "2181:2181"
+
+#   kafka:
+#     image: confluentinc/cp-kafka:latest
+#     depends_on:
+#       - zookeeper
+#     ports:
+#       - "9092:9092"
+#     environment:
+#       KAFKA_BROKER_ID: 1
+#       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+#       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+#       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+#       KAFKA_LOG_RETENTION_HOURS: 168  # 7일 보관
+
+#   postgres:
+#     image: postgres:14
+#     environment:
+#       POSTGRES_USER: zigbang
+#       POSTGRES_PASSWORD: password
+#       POSTGRES_DB: analytics
+#     ports:
+#       - "5432:5432"
+#     volumes:
+#       - postgres_data:/var/lib/postgresql/data
+
+# volumes:
+#   postgres_data:
+
+
+version: '3.8'
+
+x-airflow-common: &airflow-common
+  # 1. ⭐️ image: 대신 build: . 로 변경
+  build: . # 👈 (방금 만든 Dockerfile을 사용하라는 의미)
+  environment:
+    &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor # 👈 2일 프로젝트에는 Celery보다 간단
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${AIRFLOW_POSTGRES_USER:-airflow}:${AIRFLOW_POSTGRES_PASSWORD:-airflow}@postgres/${AIRFLOW_POSTGRES_DB:-airflow}
+    AIRFLOW__CORE__FERNET_KEY: 'fernet_key_placeholder_CHANGE_ME' # 👈 임의의 키로 변경
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    # PostgreSQL 연결 정보 (Spark job에서 사용)
+    POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
+    POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+    POSTGRES_DB: ${POSTGRES_DB:-analytics}
+    POSTGRES_USER: ${POSTGRES_USER:-zigbang}
+    POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+  volumes:
+    - ./dags:/opt/airflow/dags # 👈 로컬 dags 폴더를 마운트
+    - ./logs:/opt/airflow/logs
+    - ./src:/opt/airflow/src   # 👈 님의 Spark 스크립트(src) 폴더를 마운트
+    - ./data:/opt/airflow/data # 👈 로그 데이터 폴더 마운트
+    - ./results:/opt/airflow/results # 👈 중간 결과(silver/gold) 폴더 마운트
+  user: "${AIRFLOW_UID:-50000}:0"
+
+services:
+  # --- Kafka 인프라 ---
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    ports: ["2181:2181"]
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    ports: ["9092:9092"]
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    depends_on: [zookeeper]
+
+  # --- PostgreSQL (Airflow + Analytics DB) ---
+  postgres:
+    image: postgres:13
+    environment:
+      - POSTGRES_USER=${AIRFLOW_POSTGRES_USER:-airflow}
+      - POSTGRES_PASSWORD=${AIRFLOW_POSTGRES_PASSWORD:-airflow}
+      - POSTGRES_DB=${AIRFLOW_POSTGRES_DB:-airflow}
+    ports: ["5432:5432"]
+    volumes:
+      - postgres-db-volume:/var/lib/postgresql/data
+      - ./init-analytics-db.sql:/docker-entrypoint-initdb.d/init-analytics-db.sql
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "${AIRFLOW_POSTGRES_USER:-airflow}"]
+
+  # --- Airflow 서비스 ---
+  airflow-webserver:
+    <<: *airflow-common
+    command: webserver
+    ports: ["8080:8080"]
+    depends_on: [postgres]
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    depends_on: [postgres]
+    healthcheck:
+      test: ["CMD", "airflow", "tasks", "list"] # (간단한 헬스체크)
+
+  # (DB 초기화 및 사용자 생성을 위한 airflow-init 서비스 - 2.9.2 기준)
+  airflow-init:
+    <<: *airflow-common
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        # DB 초기화
+        airflow db upgrade
+        # Admin 사용자 생성
+        airflow users create --role Admin --username admin --password admin --firstname Admin --lastname User --email admin@example.com || echo "User already exists"
+        echo "✅ Database initialized and admin user created"
+    depends_on: [postgres]
+    restart: on-failure
+
+  # --- Spark Streaming (Real-time Processing) ---
+  spark-streaming:
+    <<: *airflow-common
+    command: >
+      bash -c "
+      echo '🚀 Waiting for Kafka to be ready...';
+      sleep 15;
+      echo '🚀 Starting Spark Streaming Job...';
+      /opt/spark/bin/spark-submit --master local[*] --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.4.4,org.postgresql:postgresql:42.5.0 --driver-memory 2g /opt/airflow/src/streaming/streaming_job.py --bootstrap-servers kafka:9092 --topic zigbang_logs
+      "
+    depends_on:
+      - kafka
+      - postgres
+    restart: unless-stopped
+    environment:
+      <<: *airflow-common-env
+      SPARK_LOCAL_IP: spark-streaming
+
+  # --- Kafka Producer (Data Generator) ---
+  kafka-producer:
+    <<: *airflow-common
+    command: >
+      bash -c "
+      echo '📡 Waiting for Kafka to be ready...';
+      sleep 10;
+      echo '📡 Starting Kafka Producer...';
+      python /opt/airflow/src/streaming/kafka_producer.py --bootstrap-servers kafka:9092
+      "
+    depends_on:
+      - kafka
+    restart: unless-stopped
+
+  # --- Streamlit Dashboard ---
+  streamlit:
+    build:
+      context: .
+      dockerfile: Dockerfile.streamlit
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./src:/app/src
+    environment:
+      POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_DB: ${POSTGRES_DB:-analytics}
+      POSTGRES_USER: ${POSTGRES_USER:-zigbang}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+    depends_on:
+      - postgres
+    restart: unless-stopped
+
+volumes:
+  postgres-db-volume:
