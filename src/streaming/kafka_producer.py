@@ -130,7 +130,10 @@ def main():
             value_serializer=lambda v: v.encode('utf-8'),
             acks='all',
             retries=3,
-            compression_type='gzip'
+            compression_type='gzip',
+            request_timeout_ms=10000,
+            api_version_auto_timeout_ms=5000,
+            metadata_max_age_ms=10000
         )
         print("✅ Kafka Producer connected\n")
     except KafkaError as e:

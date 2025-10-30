@@ -6,7 +6,7 @@ import argparse
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
     col, window, count, approx_count_distinct,
-    to_json, expr, lit, max, min, avg, sum, when, countDistinct
+    to_json, expr, lit, max, min, avg, sum, when
 )
 
 project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -69,7 +69,7 @@ def aggregate_session_metrics(df):
         .groupBy("session_id", "user_id") \
         .agg(
             count("*").alias("events_per_session"),
-            countDistinct("event_type").alias("unique_events"),
+            approx_count_distinct("event_type").alias("unique_events"),
             min("timestamp").alias("session_start"),
             max("timestamp").alias("session_end")
         ) \
@@ -93,7 +93,7 @@ def aggregate_session_metrics(df):
             avg("events_per_session").alias("avg_events_per_session"),
             avg("session_duration_sec").alias("avg_session_duration_sec"),
             (sum("is_bounce") / count("session_id") * 100).alias("bounce_rate_pct"),
-            countDistinct("user_id").alias("unique_users")
+            approx_count_distinct("user_id").alias("unique_users")
         )
 
     windowed_sessions = windowed_sessions.select(
@@ -246,13 +246,13 @@ def main():
         aggregated_df = aggregate_streaming_data(parsed_df)
         print("✅ Basic aggregation logic configured")
 
-        # Session metrics aggregation
-        session_metrics_df = aggregate_session_metrics(parsed_df)
-        print("✅ Session metrics aggregation configured")
+        # # Session metrics aggregation
+        # session_metrics_df = aggregate_session_metrics(parsed_df)
+        # print("✅ Session metrics aggregation configured")
 
-        # Funnel metrics aggregation
-        funnel_metrics_df = aggregate_funnel_metrics(parsed_df)
-        print("✅ Funnel metrics aggregation configured\n")
+        # # Funnel metrics aggregation
+        # funnel_metrics_df = aggregate_funnel_metrics(parsed_df)
+        # print("✅ Funnel metrics aggregation configured\n")
 
         jdbc_properties = {
             "user": Config.POSTGRES_USER,
@@ -260,7 +260,7 @@ def main():
             "driver": "org.postgresql.Driver"
         }
 
-        # Start 3 separate streaming queries
+        # Start 1 streaming query (basic aggregation only)
         query1 = write_to_postgres(
             aggregated_df,
             Config.POSTGRES_JDBC_URL,
@@ -269,31 +269,29 @@ def main():
             "/tmp/streaming_checkpoint_basic"
         )
 
-        query2 = write_to_postgres(
-            session_metrics_df,
-            Config.POSTGRES_JDBC_URL,
-            jdbc_properties,
-            "streaming_session_metrics",
-            "/tmp/streaming_checkpoint_session"
-        )
+        # query2 = write_to_postgres(
+        #     session_metrics_df,
+        #     Config.POSTGRES_JDBC_URL,
+        #     jdbc_properties,
+        #     "streaming_session_metrics",
+        #     "/tmp/streaming_checkpoint_session"
+        # )
 
-        query3 = write_to_postgres(
-            funnel_metrics_df,
-            Config.POSTGRES_JDBC_URL,
-            jdbc_properties,
-            "streaming_funnel_metrics",
-            "/tmp/streaming_checkpoint_funnel"
-        )
+        # query3 = write_to_postgres(
+        #     funnel_metrics_df,
+        #     Config.POSTGRES_JDBC_URL,
+        #     jdbc_properties,
+        #     "streaming_funnel_metrics",
+        #     "/tmp/streaming_checkpoint_funnel"
+        # )
 
-        print("✅ PostgreSQL write configured (3 streams)")
-        print("   - streaming_stats")
-        print("   - streaming_session_metrics")
-        print("   - streaming_funnel_metrics\n")
+        print("✅ PostgreSQL write configured (1 stream)")
+        print("   - streaming_stats\n")
         print("🚀 Streaming started... (Ctrl+C to stop)\n")
 
         streaming_query1 = query1.start()
-        streaming_query2 = query2.start()
-        streaming_query3 = query3.start()
+        # streaming_query2 = query2.start()
+        # streaming_query3 = query3.start()
 
         streaming_query1.awaitTermination()
 
